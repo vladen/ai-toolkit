@@ -28,20 +28,22 @@ Where:
 
 ### Querying Chroma DB:
 ```bash
-$ python ./scrape/query.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx  "restore password" -l 3
+$ python ./scrape/query.py "<url>" <folder> "<text>" -l <number>
 ```
 
 Where:
-- `https://helpx.adobe.com/support.html` - url of the scraped web page;
-- `scrape/data/adobe/helpx` - path to working folder with scraped files;
-- `"restore password"` - text to query Chroma DB for;
-- `-l 3` or `--limit 3` - maximum number of documents to query.
+- `<url>` - url of the scraped web page;
+- `<folder>` - path to working folder with scraped files;
+- `"<text>"` - text to query Chroma DB for;
+- `-l <number>` or `--limit <number>` - maximum number of documents to query.
 
 ### Notes
 
 If argument `filter` is not provided, this tool scrapes urls having same `schema`, `domain` and `port` as the initial url, and having no extension or `.htm`/`.html`.
 
 The tool continues scraping session if stopped due to the reach of documents `limit` or `SIGINT` (ctrl+c), given same initial url and folder are provided to the subsequent run.
+
+---
 
 ## Running as MacOS daemon
 
