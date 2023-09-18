@@ -17,31 +17,31 @@ $ pip install --user -U chromadb
 
 ### Scraping web site:
 ```bash
-$ python ./scrape/scrape.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx -l 100 -f "^https://helpx\.adobe\.com($|(/.*)?/[^.]+$|/.*\.html?)"
+$ python ./scrape/scrape.py "<url>" <folder> -l 100 -f "<filter>"
 ```
 
 Where:
-- `https://helpx.adobe.com/support.html` - url of initial web page to scrape;
-- `scrape/data/adobe/helpx` - path to working folder where scraped data will be saved;
-- `--limit 100` or `-l 100` - maximum number of web pages to scrape;
-- `--filter "^https://helpx\.adobe\.com($|(/.*)?/[^.]+$|/.*\.html?)"` or `-f "^https://helpx\.adobe\.com($|(/.*)?/[^.]+$|/.*\.html?)"` - regular expression to filter out the URLs of found links.
+- `<url>` - url of initial web page to scrape;
+- `<folder>` - path to working folder where scraped data will be saved;
+- `-l <number>` or `--limit <number>` - maximum number of web pages to scrape;
+- `-f "<filter>"` or `--filter "<filter>"` - regular expression to filter out the URLs that should not be scraped.
 
 ### Querying Chroma DB:
 ```bash
-$ python ./scripts/query.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx  "I forgot my password" -l 3
+$ python ./scrape/query.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx  "restore password" -l 3
 ```
 
 Where:
 - `https://helpx.adobe.com/support.html` - url of the scraped web page;
 - `scrape/data/adobe/helpx` - path to working folder with scraped files;
-- `"I forgot my password"` - text to query Chroma DB for;
+- `"restore password"` - text to query Chroma DB for;
 - `-l 3` or `--limit 3` - maximum number of documents to query.
 
 ### Notes
 
-If `filter` argument was not provided, this tool scrapes urls having either no extension or `.htm`/`.html` extensions and same `schema`, `domain` and `port` as the initial url.
+If argument `filter` is not provided, this tool scrapes urls having same `schema`, `domain` and `port` as the initial url, and having no extension or `.htm`/`.html`.
 
-The tool continues scraping session if stopped due to the reach of documents `limit` or SIGINT (ctrl+c) signal, given same initial url and folder are provided to the subsequent run.
+The tool continues scraping session if stopped due to the reach of documents `limit` or `SIGINT` (ctrl+c), given same initial url and folder are provided to the subsequent run.
 
 ## Running as MacOS daemon
 
