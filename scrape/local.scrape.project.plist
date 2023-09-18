@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.scrape.{project}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.11/bin/python3</string>
+        <string>/Users/{user}/projects/{project}/scrape/scrape.py</string>
+        <string>https://helpx.adobe.com/support.html</string>
+        <string>/Users/{user}/projects/datasets/{project}</string>
+        <string>--limit 1000</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/{user}/projects/datasets/{project}/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/{user}/projects/datasets/{project}/stderr.log</string>
+</dict>
+</plist>
