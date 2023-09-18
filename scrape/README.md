@@ -8,15 +8,16 @@ Assuming that you already have `python 3.10+` and `pip` onboard...
 
 ```bash
 $ pip install --user -U nltk
-$ python3 -m nltk.downloader punkt
+$ python -m nltk.downloader punkt
 $ pip install --user -U unstructured
+$ pip install --user -U chromadb
 ```
 
 ## Usage
 
 ### Scraping web site:
 ```bash
-$ python3 ./scrape/scrape.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx -l 100 -f "^https://helpx\.adobe\.com($|(/.*)?/[^.]+$|/.*\.html?)"
+$ python ./scrape/scrape.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx -l 100 -f "^https://helpx\.adobe\.com($|(/.*)?/[^.]+$|/.*\.html?)"
 ```
 
 Where:
@@ -27,7 +28,7 @@ Where:
 
 ### Querying Chroma DB:
 ```bash
-$ python3 ./scripts/query.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx  "I forgot my password" -l 3
+$ python ./scripts/query.py https://helpx.adobe.com/support.html scrape/data/adobe/helpx  "I forgot my password" -l 3
 ```
 
 Where:
