@@ -36,24 +36,31 @@ signal.signal(signal.SIGTERM, signal_handler)
 # main logic
 
 
-def upsert_to_chroma(chroma_collection, json_document):
+def upsert_to_chroma(chroma_collection, items, links, target_url):
     if chroma_collection is None:
         return
     document = ""
-    for item in json_document["items"]:
-        if "text" in item:
-            document += item["text"] + "\n"
-        if "links" in item:
-            document += "Links:"
-            for [link_text, link_url] in item["links"]:
-                document += f"\n\t{link_text} {link_url}"
-            document += "\n\n"
-    url = json_document["url"]
+    metadata = {
+        "links": "",
+        "updated": get_current_timestamp()
+    }
+    for item in items:
+        if len(document) > 0:
+            document += "\n"
+        document += f"{item[0]}: {item[1]}"
+    links = ""
+    for link in links:
+        if len(metadata["links"]) > 0:
+            metadata["links"] += "\n"
+        if len(link) > 1:
+            metadata["links"] += f"{link[0]} {link[1]}"
+        else:
+            metadata["links"] +=link[0]
     try:
         chroma_collection.upsert(
             documents=[document],
-            metadatas=[{"updated": get_current_timestamp()}],
-            ids=[url]
+            metadatas=[metadata],
+            ids=[target_url]
         )
     except Exception as e:
         print(f"Failed to save documents to chroma db: {str(e)}")
@@ -63,11 +70,16 @@ def clean_items(items, target_url, url_filter):
     def normalise(text):
         return re.sub(r"\s+", " ", text).strip()
 
+    all_links = []
     linked_urls = set()
-    for item in items:
+    prev_index = None
+    prev_type = None
+    text_length = 0
+    for index, item in enumerate(items):
         item.pop("element_id", None)
         metadata = item.pop("metadata", {})
         text = normalise(item.pop("text", ""))
+        type = item["type"]
         # delete unnecessary metadata
         metadata.pop("emphasized_text_contents", None)
         metadata.pop("emphasized_text_tags", None)
@@ -83,30 +95,45 @@ def clean_items(items, target_url, url_filter):
             link_urls.pop(index)
             link_texts.pop(index)
         # reshape links
-        links = []
         if link_urls:
             for [link_text, link_url] in zip(link_texts, link_urls):
                 link_text = normalise(link_text) if link_text else ""
                 link_url = urljoin(target_url, link_url, False)
                 [linked_url, parsed_url] = parse_url(link_url)
                 # add link to queue if it matches pattern
-                if (url_filter.match(linked_url)):
+                if (len(link_url) and url_filter.match(linked_url)):
                     linked_urls.add(linked_url)
-                    link = [link_text, link_url]
-                    links.append(link)
-        if links:
-            item["links"] = links
+                    if len(link_text):
+                        all_links.append([link_url, link_text])
+                    else:
+                        all_links.append([link_url])
         # update item
         if metadata:
             item["metadata"] = metadata
         if len(text) > 0:
-            item["text"] = text
-    return [items, linked_urls]
-
+            if len(text) > 128:
+                text_length += len(text)
+                item["text"] = text
+            elif not prev_type is None and prev_type == type:
+                prev_item = items[prev_index]
+                if "text" in prev_item:
+                    if prev_item["text"].find(text) == -1:
+                        prev_item["text"] += f" | {text}"
+                        text_length += len(text) + 3
+                else:
+                    prev_item["text"] = text
+                    text_length += len(text)
+            else:
+                item["text"] = text
+                text_length += len(text)
+        if prev_type is None or prev_type != type:
+            prev_index = index
+            prev_type = type
+    texful_items = [[item['type'], item['text']] for item in items if "text" in item]
+    return [texful_items, text_length, linked_urls, all_links]
 
 def convert_to_csv(data):
     class csv_fieldnames(str, Enum):
-        index = "Index"
         type = "Type"
         text = "Text"
     items = data.get("items", [])
@@ -114,25 +141,11 @@ def convert_to_csv(data):
     fieldnames = [member.value for member in csv_fieldnames]
     writer = csv.DictWriter(csv_buffer, fieldnames)
     writer.writeheader()
-    index = 0
-    for item in items:
-        links = item.get("links", None)
-        text = item.get("text", None)
-        type = item["type"]
+    for [type, text] in items:
         writer.writerow({
-            csv_fieldnames.index: index,
             csv_fieldnames.type: type,
             csv_fieldnames.text: text
         })
-        index += 1
-        if links:
-            for [link_text, link_url] in item["links"]:
-                writer.writerow({
-                    csv_fieldnames.index: index,
-                    csv_fieldnames.type: "Link",
-                    csv_fieldnames.text: f"{link_text}: {link_url}"
-                })
-                index += 1
     csv_data = csv_buffer.getvalue()
     csv_buffer.close()
     return csv_data
@@ -148,7 +161,7 @@ def fetch_document(chroma_collection, target_folder, target_url, url_filter):
         log(f"Failed to fetch {target_url}: {str(e)}")
         return None
     # reshape the data
-    [items, linked_urls] = clean_items(
+    [items, text_length, linked_urls, links] = clean_items(
         json.loads(data), target_url, url_filter)
     # save as json and csv files
     hash = hash_url(target_url)
@@ -158,9 +171,11 @@ def fetch_document(chroma_collection, target_folder, target_url, url_filter):
     json_document = {
         "url": target_url,
         "files": [csv_path, json_path],
-        "items": items
+        "length": text_length,
+        "items": items,
+        "links": links
     }
-    upsert_to_chroma(chroma_collection, json_document)
+    upsert_to_chroma(chroma_collection, items, links, target_url)
     with open(csv_path, "w") as file:
         file.write(convert_to_csv(json_document))
     with open(json_path, "w") as file:
@@ -183,13 +198,11 @@ def restore_session(target_folder, url_filter):
                 url = json_document['url']
                 if len(url) and url_filter.match(url):
                     scraped_urls.add(url)
-            if 'items' in json_document:
-                for item in json_document['items']:
-                    if 'links' in item:
-                        for [link_text, link_url] in item['links']:
-                            [linked_url, parsed_url] = parse_url(link_url)
-                            if len(linked_url) and url_filter.match(linked_url):
-                                pending_urls.add(linked_url)
+            for link in json_document.get('links', []):
+                link_url = link[0]
+                [linked_url, parsed_url] = parse_url(link_url)
+                if len(linked_url) and url_filter.match(linked_url):
+                    pending_urls.add(linked_url)
     pending_urls = pending_urls - scraped_urls
     return [pending_urls, scraped_urls]
 

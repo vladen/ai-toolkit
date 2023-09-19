@@ -28,14 +28,15 @@ Where:
 
 ### Querying Chroma DB:
 ```bash
-$ python ./scrape/query.py "<url>" <folder> "<text>" -l <number>
+$ python ./scrape/query.py "<url>" <folder> -l <number> -v true "<text>"
 ```
 
 Where:
 - `<url>` - url of the scraped web page;
 - `<folder>` - path to working folder with scraped files;
 - `"<text>"` - text to query Chroma DB for;
-- `-l <number>` or `--limit <number>` - maximum number of documents to query.
+- `-l <number>` or `--limit <number>` - maximum number of documents to query,
+- `-v <boolean>` or `--verbose <boolean>` - returns contents of each found document.
 
 ### Notes
 

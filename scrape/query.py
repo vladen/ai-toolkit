@@ -9,10 +9,13 @@ default_document_limit = 3
 # main logic
 
 
-def query_chroma_db(chroma_collection, document_limit, text):
+def query_chroma_db(chroma_collection, document_limit, text, verbose):
     try:
+      include = ["distances"]
+      if verbose == True:
+          include.append("documents")
       results = chroma_collection.query(
-          include=["distances", "documents"],
+          include=include,
           n_results=document_limit,
           query_texts=[text],
       )
@@ -45,7 +48,7 @@ def main(args):
     chroma_collection = open_chroma_db(base_url, target_folder)
     if not chroma_collection is None:
         log(f"Opened chroma database: {str(chroma_collection.count())} documents")
-    query_chroma_db(chroma_collection, document_limit, text)
+    query_chroma_db(chroma_collection, document_limit, text, args.verbose)
 
 
 if __name__ == "__main__":
@@ -63,5 +66,7 @@ if __name__ == "__main__":
         "text", help="text to search in the Chroma DB")
     parser.add_argument(
         "-l", "--limit", type=int, help=f"maximum number of results to return, {default_document_limit} by default")
+    parser.add_argument(
+        "-v", "--verbose", type=bool, help=f"additional logging", default=False)
     args = parser.parse_args()
     main(args)
