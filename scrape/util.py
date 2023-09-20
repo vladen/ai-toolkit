@@ -1,5 +1,6 @@
 import chromadb
 import hashlib
+import json
 import os
 import re
 
@@ -18,12 +19,13 @@ def log(message):
     print(f"{datetime.now().isoformat()} | {message}")
 
 
-def open_chroma_db(base_url, target_folder):
+def open_chroma_db(path, verbose):
     try:
-        file_name = f"_chroma.{str(hash_url(base_url))}"
-        chroma_path = os.path.join(target_folder, file_name)
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        return chroma_client.get_or_create_collection(name="scrape")
+        chroma_client = chromadb.PersistentClient(path=path)
+        chroma_collection = chroma_client.get_or_create_collection(name="scrape")
+        if verbose == True:
+            log(f"Opened chroma database: {str(chroma_collection.count())} documents")
+        return chroma_collection
     except Exception as e:
         log(f"Failed to open chroma database: {str(e)}")
         return None
@@ -41,11 +43,14 @@ def parse_url(url):
     return [base_url, parsed_url]
 
 
-def parse_filter_arg(args, parsed_url):
+def get_default_filter(parsed_url):
+    netloc = re.escape(parsed_url.netloc)
+    scheme = re.escape(parsed_url.scheme)
+    return fr'^{scheme}://{netloc}($|(/.*)?/[^.]+$|/.*\.html?)'
+
+def parse_filter_arg(args, default_filter):
     if args.filter is None:
-        netloc = re.escape(parsed_url.netloc)
-        scheme = re.escape(parsed_url.scheme)
-        return fr'^{scheme}://{netloc}($|(/.*)?/[^.]+$|/.*\.html?)'
+        return default_filter
     else:
         try:
             re.compile(args.filter)
@@ -97,3 +102,32 @@ def parse_url_arg(args):
         if parsed_url is None:
             log(f"Argument 'url' is not valid: {args.url}")
     return [base_url, parsed_url]
+
+def restore_session(file_limit, target_folder, url_filter, verbose):
+    file_count = 0
+    pending_urls = set()
+    scraped_files = set()
+    scraped_urls = set()
+    file_names = [f for f in os.listdir(target_folder) if f.endswith('.json')]
+    if not len(file_names):
+        return [pending_urls, scraped_urls, scraped_files]
+    if verbose == True:
+        log(f"Restoring session: {len(file_names)} files")
+    for file_name in file_names:
+        file_path = os.path.join(target_folder, file_name)
+        with open(file_path, 'r') as f:
+            json_document = json.load(f)
+            if 'url' in json_document:
+                url = json_document['url']
+                if len(url) and url_filter.match(url):
+                    scraped_files.add(file_path)
+                    scraped_urls.add(url)
+                    file_count += 1
+                    if not file_limit is None and file_count >=file_limit: break
+            for link in json_document.get('links', []):
+                link_url = link[0]
+                [linked_url, parsed_url] = parse_url(link_url)
+                if len(linked_url) and url_filter.match(linked_url):
+                    pending_urls.add(linked_url)
+    pending_urls = pending_urls - scraped_urls
+    return [pending_urls, scraped_urls, scraped_files]

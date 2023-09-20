@@ -36,36 +36,6 @@ signal.signal(signal.SIGTERM, signal_handler)
 # main logic
 
 
-def upsert_to_chroma(chroma_collection, items, links, target_url):
-    if chroma_collection is None:
-        return
-    document = ""
-    metadata = {
-        "links": "",
-        "updated": get_current_timestamp()
-    }
-    for item in items:
-        if len(document) > 0:
-            document += "\n"
-        document += f"{item[0]}: {item[1]}"
-    links = ""
-    for link in links:
-        if len(metadata["links"]) > 0:
-            metadata["links"] += "\n"
-        if len(link) > 1:
-            metadata["links"] += f"{link[0]} {link[1]}"
-        else:
-            metadata["links"] +=link[0]
-    try:
-        chroma_collection.upsert(
-            documents=[document],
-            metadatas=[metadata],
-            ids=[target_url]
-        )
-    except Exception as e:
-        print(f"Failed to save documents to chroma db: {str(e)}")
-
-
 def clean_items(items, target_url, url_filter):
     def normalise(text):
         return re.sub(r"\s+", " ", text).strip()
@@ -151,11 +121,12 @@ def convert_to_csv(data):
     return csv_data
 
 
-def fetch_document(chroma_collection, target_folder, target_url, url_filter):
+def fetch_document(target_folder, target_url, url_filter, verbose):
     # scrape the page with "unstructured"
     data = None
     try:
-        log(f"Fetching page: {target_url}")
+        if verbose == True:
+            log(f"Fetching page: {target_url}")
         data = elements_to_json(partition_html(url=target_url))
     except Exception as e:
         log(f"Failed to fetch {target_url}: {str(e)}")
@@ -165,7 +136,6 @@ def fetch_document(chroma_collection, target_folder, target_url, url_filter):
         json.loads(data), target_url, url_filter)
     # save as json and csv files
     hash = hash_url(target_url)
-    log(f"Saved as: {hash}")
     csv_path = os.path.join(target_folder, hash + ".csv")
     json_path = os.path.join(target_folder, hash + ".json")
     json_document = {
@@ -175,51 +145,28 @@ def fetch_document(chroma_collection, target_folder, target_url, url_filter):
         "items": items,
         "links": links
     }
-    upsert_to_chroma(chroma_collection, items, links, target_url)
     with open(csv_path, "w") as file:
         file.write(convert_to_csv(json_document))
     with open(json_path, "w") as file:
         json.dump(json_document, file, indent=2, ensure_ascii=False)
+    if verbose == True:
+        log(f"Saved as: {hash}")
     return linked_urls
 
 
-def restore_session(target_folder, url_filter):
-    pending_urls = set()
-    scraped_urls = set()
-    file_names = [f for f in os.listdir(target_folder) if f.endswith('.json')]
-    if not len(file_names):
-        return [pending_urls, scraped_urls]
-    log(f"Restoring session: {len(file_names)} files")
-    for file_name in file_names:
-        file_path = os.path.join(target_folder, file_name)
-        with open(file_path, 'r') as f:
-            json_document = json.load(f)
-            if 'url' in json_document:
-                url = json_document['url']
-                if len(url) and url_filter.match(url):
-                    scraped_urls.add(url)
-            for link in json_document.get('links', []):
-                link_url = link[0]
-                [linked_url, parsed_url] = parse_url(link_url)
-                if len(linked_url) and url_filter.match(linked_url):
-                    pending_urls.add(linked_url)
-    pending_urls = pending_urls - scraped_urls
-    return [pending_urls, scraped_urls]
-
-
-def scrape_url(base_url, chroma_collection, document_limit, target_folder, url_filter):
+def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
     document_count = 0
-    [pending_urls, scraped_urls] = restore_session(target_folder, url_filter)
+    [pending_urls, scraped_urls, _] = restore_session(None, target_folder, url_filter, verbose)
     if (len(pending_urls) == 0):
         pending_urls.add(base_url)
-    log(f"Starting scraping: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
+    if verbose == True:
+        log(f"Starting scraping pages: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
     try:
         while not shutdown_requested and document_count < document_limit and len(pending_urls):
             time.sleep(0.1)
             # try to fetch next pending url
             target_url = pending_urls.pop()
-            linked_urls = fetch_document(
-                chroma_collection, target_folder, target_url, url_filter)
+            linked_urls = fetch_document(target_folder, target_url, url_filter, verbose)
             if linked_urls is None:
                 continue
             scraped_urls.add(target_url)
@@ -229,7 +176,8 @@ def scrape_url(base_url, chroma_collection, document_limit, target_folder, url_f
             ]
             pending_urls.update(matching_urls)
             document_count += 1
-            log(f"Scraping: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
+            if verbose == True:
+                log(f"Scraping pages: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
     except KeyboardInterrupt:
         pass
 
@@ -247,21 +195,19 @@ def main(args):
     target_folder = parse_folder_arg(args)
     if target_folder is None:
         sys.exit(1)
-    url_filter = parse_filter_arg(args, parsed_url)
+    url_filter = parse_filter_arg(args, get_default_filter(parsed_url))
     if url_filter is None:
         sys.exit(1)
+    verbose = args.verbose
     # activate tool
     log(f"Ready to scrape using args:")
     log(f"\tBase url: {base_url}")
     log(f"\tDocument limit: {document_limit}")
     log(f"\tTarget folder: {target_folder}")
     log(f"\tUrl filter: {url_filter}")
-    chroma_collection = open_chroma_db(base_url, target_folder)
-    if not chroma_collection is None:
-      log(f"Opened chroma database: {str(chroma_collection.count())} documents")
     thread = threading.Thread(
         target=scrape_url,
-        args=(base_url, chroma_collection, document_limit, target_folder, re.compile(url_filter))
+        args=(base_url, document_limit, target_folder, re.compile(url_filter), verbose)
     )
     thread.daemon = True
     thread.start()
@@ -272,7 +218,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""
-          I can scrape web pages into JSON/CSV files plus Chroma DB.
+          I can scrape web pages into JSON/CSV files.
           Just tell me the URL to the initial web page and the path to the folder where to store extracted data.
           Enjoy!
         """)
@@ -284,5 +230,7 @@ if __name__ == "__main__":
         "-f", "--filter", help="optional URL regex pattern filtering found links out, base URL of the initial page by default (schema, domain, port)")
     parser.add_argument(
         "-l", "--limit", type=int, help=f"maximum number of URLs to fetch, {default_document_limit} by default")
+    parser.add_argument(
+        "-v", "--verbose", type=bool, help=f"report activity to stdout", default=True)
     args = parser.parse_args()
     main(args)

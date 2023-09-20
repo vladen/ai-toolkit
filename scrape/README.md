@@ -1,6 +1,11 @@
 # Web page scraper tool/daemon on python
 
-A command-line tool to scrape texts from a given web page and the pages linked to it into JSON/CSV files and Chroma Database.
+Command-line tools to:
+
+- scrape texts from web pages store them JSON/CSV files
+- upload scraped texts to Chroma DB
+- TODO: query Chat GPT for summaries of scraped texts, store in Chroma DB
+- TODO: prepare training set for Chat GPT, based on scraped texts
 
 ## Installation
 
@@ -11,38 +16,57 @@ $ pip install --user -U nltk
 $ python -m nltk.downloader punkt
 $ pip install --user -U unstructured
 $ pip install --user -U chromadb
+$ pip install --user -U openai
 ```
+
+Create env variable for `OPENAI_API_KEY` exporting your key.
 
 ## Usage
 
 ### Scraping web site:
+
 ```bash
-$ python ./scrape/scrape.py "<url>" <folder> -l 100 -f "<filter>"
+$ python ./scrape/scrape.py "<url>" <folder>  -f "<filter>" -l 100 -v 0
 ```
 
 Where:
-- `<url>` - url of initial web page to scrape;
-- `<folder>` - path to working folder where scraped data will be saved;
-- `-l <number>` or `--limit <number>` - maximum number of web pages to scrape;
-- `-f "<filter>"` or `--filter "<filter>"` - regular expression to filter out the URLs that should not be scraped.
+
+- `<url>` - required, url of initial web page to scrape;
+- `<folder>` - required, path to working folder where scraped data will be saved;
+- `-l <number>` or `--limit <number>` - optional, maximum number of web pages to scrape;
+- `-f "<filter>"` or `--filter "<filter>"` - optional, regular expression to filter URLs to be scraped;
+- `-v <boolean>` or `--verbose <boolean>` - optional, verbose mode, true by default.
+
+#### Notes
+
+If argument `filter` is not provided, only urls having same `schema/domain/port` as the initial url, and having no extension or `.htm`/`.html` extension will be scraped.
+
+Existing scraping session continues, if scraping is started again with same `url/folder` args.
+This tool only scrapes new pages, without checking if already scraped were updated.
+
+### Uploading data to Chroma DB:
+
+```bash
+$ python ./scrape/upload.py <folder> "<chroma>" -l <number> -v 1
+```
+
+Where:
+
+- `<folder>` - required, path to folder with scraped files;
+- `"<chroma>"` - required, path to Chroma DB folder;
+- `-l <number>` or `--limit <number>` - optional, maximum number of documents to upload.
 
 ### Querying Chroma DB:
+
 ```bash
-$ python ./scrape/query.py "<url>" <folder> -l <number> -v true "<text>"
+$ python ./scrape/query.py <folder> "<text>" -l <number> -v 1
 ```
 
 Where:
-- `<url>` - url of the scraped web page;
-- `<folder>` - path to working folder with scraped files;
-- `"<text>"` - text to query Chroma DB for;
-- `-l <number>` or `--limit <number>` - maximum number of documents to query,
-- `-v <boolean>` or `--verbose <boolean>` - returns contents of each found document.
 
-### Notes
-
-If argument `filter` is not provided, this tool scrapes urls having same `schema`, `domain` and `port` as the initial url, and having no extension or `.htm`/`.html`.
-
-The tool continues scraping session if stopped due to the reach of documents `limit` or `SIGINT` (ctrl+c), given same initial url and folder are provided to the subsequent run.
+- `<folder>` - path to Chroma DB folder;
+- `"<text>"` - text to search in Chroma DB;
+- `-l <number>` or `--limit <number>` - optional, maximum number of documents;
 
 ---
 
@@ -50,11 +74,12 @@ The tool continues scraping session if stopped due to the reach of documents `li
 
 To run scrape script as a daemon (in background, even when your laptop sleeps),
 update `scrape/local.scrape.project.plist`
-  - copy template file and replace `.project.` part in the target file name with the name of your project,
-  - open target file and replace `{project}` and `{user}` placeholders and with the correct values,
-  - use same values for same placeholders in examples below,
-  - copy the file to the daemon folder,
-  - run new daemon.
+
+- copy template file and replace `.project.` part in the target file name with the name of your project,
+- open target file and replace `{project}` and `{user}` placeholders and with the correct values,
+- use same values for same placeholders in examples below,
+- copy the file to the daemon folder,
+- run new daemon.
 
 ### Copying file to the daemon folder
 
