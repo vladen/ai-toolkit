@@ -3,27 +3,19 @@ import openai
 import os
 
 prompt = """
-Perform 2 tasks with the content scraped from "https://adobe.com/" web page and formatted as CSV:
-1. Summarise it in several sentences (max 25% of the original text), preserve all important subjects;
+Perform 2 tasks with the content scraped from "{url}" web page:
+1. Summarise it in several sentences, make summary size below 50% of content size keeping all important subjects;
 2. Generate 3 relevant end-user questions that would be perfectly answered on that page.
 
 Format your reply using this template:
-```
+```text
 Summary:
-  sentence
-  sentence
-  sentence
-  ...
-
+  text
 Questions:
-  question
-  question
-  question
+  list
 ```
 
----
-
-```CSV
+Scraped data:
 Type,Text
 Title,Ready for standout content? Meet Adobe Express.
 NarrativeText,"Make and share beautiful content with ease. Choose from thousands of professional-designed templates for fast social posts, flyers, banners, and more."
@@ -59,3 +51,5 @@ response = openai.Completion.create(
 )
 
 print(response.choices[0].text)
+print("")
+print(response)

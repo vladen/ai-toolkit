@@ -99,26 +99,9 @@ def clean_items(items, target_url, url_filter):
         if prev_type is None or prev_type != type:
             prev_index = index
             prev_type = type
-    texful_items = [[item['type'], item['text']] for item in items if "text" in item]
+    texful_items = [[item['type'], item['text']]
+                    for item in items if "text" in item]
     return [texful_items, text_length, linked_urls, all_links]
-
-def convert_to_csv(data):
-    class csv_fieldnames(str, Enum):
-        type = "Type"
-        text = "Text"
-    items = data.get("items", [])
-    csv_buffer = io.StringIO()
-    fieldnames = [member.value for member in csv_fieldnames]
-    writer = csv.DictWriter(csv_buffer, fieldnames)
-    writer.writeheader()
-    for [type, text] in items:
-        writer.writerow({
-            csv_fieldnames.type: type,
-            csv_fieldnames.text: text
-        })
-    csv_data = csv_buffer.getvalue()
-    csv_buffer.close()
-    return csv_data
 
 
 def fetch_document(target_folder, target_url, url_filter, verbose):
@@ -145,8 +128,6 @@ def fetch_document(target_folder, target_url, url_filter, verbose):
         "items": items,
         "links": links
     }
-    with open(csv_path, "w") as file:
-        file.write(convert_to_csv(json_document))
     with open(json_path, "w") as file:
         json.dump(json_document, file, indent=2, ensure_ascii=False)
     if verbose == True:
@@ -156,7 +137,8 @@ def fetch_document(target_folder, target_url, url_filter, verbose):
 
 def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
     document_count = 0
-    [pending_urls, scraped_urls, _] = restore_session(None, target_folder, url_filter, verbose)
+    [pending_urls, scraped_urls, _] = restore_session(
+        None, target_folder, url_filter, verbose)
     if (len(pending_urls) == 0):
         pending_urls.add(base_url)
     if verbose == True:
@@ -166,7 +148,8 @@ def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
             time.sleep(0.1)
             # try to fetch next pending url
             target_url = pending_urls.pop()
-            linked_urls = fetch_document(target_folder, target_url, url_filter, verbose)
+            linked_urls = fetch_document(
+                target_folder, target_url, url_filter, verbose)
             if linked_urls is None:
                 continue
             scraped_urls.add(target_url)
@@ -207,7 +190,8 @@ def main(args):
     log(f"\tUrl filter: {url_filter}")
     thread = threading.Thread(
         target=scrape_url,
-        args=(base_url, document_limit, target_folder, re.compile(url_filter), verbose)
+        args=(base_url, document_limit, target_folder,
+              re.compile(url_filter), verbose)
     )
     thread.daemon = True
     thread.start()
