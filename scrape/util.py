@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
+
 def get_current_timestamp():
     return int(datetime.utcnow().timestamp() * 1000)
 
@@ -22,7 +23,8 @@ def log(message):
 def open_chroma_db(path, verbose):
     try:
         chroma_client = chromadb.PersistentClient(path=path)
-        chroma_collection = chroma_client.get_or_create_collection(name="scrape")
+        chroma_collection = chroma_client.get_or_create_collection(
+            name="scrape")
         if verbose == True:
             log(f"Opened chroma database: {str(chroma_collection.count())} documents")
         return chroma_collection
@@ -43,11 +45,6 @@ def parse_url(url):
     return [base_url, parsed_url]
 
 
-def get_default_filter(parsed_url):
-    netloc = re.escape(parsed_url.netloc)
-    scheme = re.escape(parsed_url.scheme)
-    return fr'^{scheme}://{netloc}($|(/.*)?/[^.]+$|/.*\.html?)'
-
 def parse_filter_arg(args, default_filter):
     if args.filter is None:
         return default_filter
@@ -62,21 +59,21 @@ def parse_filter_arg(args, default_filter):
 
 def parse_folder_arg(args, create=True):
     if args.folder is None:
-      log("Argument 'folder' was not provided")
-      return None
+        log("Argument 'folder' was not provided")
+        return None
     else:
-      folder = args.folder
-      if create == True:
-          if not os.path.exists(folder):
-              try:
-                  os.makedirs(folder)
-              except Exception as e:
-                  log(f"Failed to create target folder: {str(e)}")
-                  return None
-      elif not os.path.exists(folder):
-          log(f"Target folder does not exists: {folder}")
-          return None
-      return folder
+        folder = args.folder
+        if create == True:
+            if not os.path.exists(folder):
+                try:
+                    os.makedirs(folder)
+                except Exception as e:
+                    log(f"Failed to create target folder: {str(e)}")
+                    return None
+        elif not os.path.exists(folder):
+            log(f"Target folder does not exists: {folder}")
+            return None
+        return folder
 
 
 def parse_limit_arg(args, default_value):
@@ -103,6 +100,7 @@ def parse_url_arg(args):
             log(f"Argument 'url' is not valid: {args.url}")
     return [base_url, parsed_url]
 
+
 def restore_session(file_limit, target_folder, url_filter, verbose):
     file_count = 0
     pending_urls = set()
@@ -123,7 +121,8 @@ def restore_session(file_limit, target_folder, url_filter, verbose):
                     scraped_files.add(file_path)
                     scraped_urls.add(url)
                     file_count += 1
-                    if not file_limit is None and file_count >=file_limit: break
+                    if not file_limit is None and file_count >= file_limit:
+                        break
             for link in json_document.get('links', []):
                 link_url = link[0]
                 [linked_url, parsed_url] = parse_url(link_url)

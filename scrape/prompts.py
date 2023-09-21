@@ -1,37 +1,28 @@
-def make_context_prompt(document, summary, url):
+def make_context_prompt(content, summary, url):
   return f"""
-Some information relevant to the subject was found in the Internet and provided below.
-Use this information in your answer.
+Some information related to this subject was found on an official we page.
+Use it in your answer.
 
-Chat GPT response:
+Page URL: {url}
+Page summary:
 ```text
 {summary}
 ```
-
 Page content:
-```csv
-{document}
+```json
+{content}
 ```
-
-Page URL: {url}
   """
 
-def make_summary_prompt(document, url):
+def make_summary_prompt(content):
   return f"""
-Perform 2 tasks with the content scraped from "{url}" web page:
-1. Summarise it in several sentences, make summary size approximately 50% of text size in chars, keep all important subjects;
-2. Generate 3 relevant end-user questions that would be perfectly answered on that page.
-
-Format your reply using this template:
+Use this text as `context` to generate your reply for imaginary end-user
+as you were an assistant chat on a corporate web page:
 ```text
-Summary:
-  text
-Questions:
-  list
+{content}
 ```
-
-Scraped data:
-```csv
-{document}
-```
+Generate 2 entities for the `context`:
+1. one summary - several sentences, up to 50% of the `context`, all important subjects preserved;
+2. three concise and simple end-user questions - relevant to the `context`.
+Format your reply as `json` object with 2 properties: `questions` and `summary`.
 """

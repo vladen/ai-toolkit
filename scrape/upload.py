@@ -1,13 +1,4 @@
-# accept folder and url filter
-# scan json files for urls
-# for each csv file
-#   toss it to chatgpt
-#   save summaries and questions to file (hash.txt)
-#   upload summaries and texts to vector db
-
 import argparse
-import csv
-import io
 import openai
 import pandas as pd
 import signal
@@ -15,8 +6,6 @@ import sys
 import time
 import threading
 
-from enum import Enum
-from io import StringIO
 from prompts import *
 from util import *
 
@@ -37,23 +26,24 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 # main logic
 
-def create_metadata(links, url):
-    metadata = {
-        "links": "",
-        "updated": get_current_timestamp()
-    }
-    for link in links:
-        if len(metadata["links"]) > 0:
-            metadata["links"] += "\n"
-        if len(link) > 1:
-            metadata["links"] += f"{link[0]} {link[1]}"
-        else:
-            metadata["links"] += link[0]
-
-
-def upsert_document(chroma_collection, document, metadata, url, verbose):
+def upsert_document(chroma_collection, json_document, verbose):
     if chroma_collection is None:
         return
+    gpt_document = json_document["gpt"]
+    summary = gpt_document.get("summary", "")
+    url = json_document["url"]
+    if len(summary) == 0:
+        log(f"Ignored document, missing summary: {url}")
+        return False
+    document = json.dumps({
+        "summary": summary,
+        "questions": gpt_document.get("questions", []),
+        "items": json_document["items"],
+        "links": json_document["links"],
+    })
+    metadata = {
+        "updated": get_current_timestamp()
+    }
     try:
         chroma_collection.upsert(
             documents=[document],
@@ -62,42 +52,21 @@ def upsert_document(chroma_collection, document, metadata, url, verbose):
         )
         if verbose == True:
           log(f"Upserted document to chroma db: {url}")
+          return True
     except Exception as e:
-        log(f"Failed to upsert document to chroma db: {url}\n{str(e)}")
+        log(f"Failed to upsert document to Chroma DB: {url}\n{str(e)}")
+    return False
 
-def deduplicate_csv(csv_document):
-    input_csv_stream = StringIO(csv_document)
-    df = pd.read_csv(input_csv_stream)
-    columns_to_check = ["Type", "Text"]
-    data_frame = df.drop_duplicates(subset=columns_to_check, keep="first")
-    output_csv_stream = StringIO()
-    data_frame.to_csv(output_csv_stream, index=False)
-    csv_document = output_csv_stream.getvalue()
-    input_csv_stream.close()
-    output_csv_stream.close()
-    return csv_document
+def extract_texts(json_document):
+    texts = []
+    for [type, text] in json_document["items"]:
+        texts.append(f"{type}: {text}")
+    df = pd.DataFrame({ "texts": texts })
+    texts = df.drop_duplicates(subset='texts')["texts"]
+    return "\n".join(texts)
 
-def make_csv(items):
-    class csv_fieldnames(str, Enum):
-        type = "Type"
-        text = "Text"
-    buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[member.value for member in csv_fieldnames]
-    )
-    writer.writeheader()
-    for [type, text] in items:
-        writer.writerow({
-            csv_fieldnames.type: type,
-            csv_fieldnames.text: text
-        })
-    document = buffer.getvalue()
-    buffer.close()
-    return deduplicate_csv(document)
-
-def summarize_document(csv_document, json_path, url, verbose):
-    prompt = make_summary_prompt(csv_document, url)
+def summarize_document(json_document, json_path, url, verbose):
+    prompt = make_summary_prompt(extract_texts(json_document))
     openai.api_key = os.getenv("OPENAI_API_KEY")
     try:
         response = openai.Completion.create(
@@ -106,15 +75,21 @@ def summarize_document(csv_document, json_path, url, verbose):
             max_tokens=1024,
             temperature=0.25
         )
+        gpt_document = json.loads(response.choices[0].text)
+        if verbose == True:
+            log(f"Summarized with Chat GPT: {url}")
+        return {
+            "id": response.id,
+            "questions": gpt_document.get("questions", []),
+            "summary": gpt_document.get("summary", ""),
+            "usage": response.usage
+        }
     except Exception as e:
-        log(f"Failed to summarize with Chat GPT:\n\t{len(prompt)} chars\n\t{json_path}\n\t{url}\n\t{str(e)}")
-        return None
-    if verbose == True:
-        log(f"Summarized with Chat GPT: {url}")
-    summary = response.choices[0].text if len(response.choices) > 0 else None
-    return summary
+        log(f"Failed to summarize with Chat GPT:\n\t{len(prompt)} chars in prompt\n\t{json_path}\n\t{url}\n\t{str(e)}")
+        return False
 
 def upload_document(chroma_collection, json_path, verbose):
+    success = False
     try:
         with open(json_path, 'r') as file:
             json_document = json.load(file)
@@ -123,35 +98,18 @@ def upload_document(chroma_collection, json_path, verbose):
                 if verbose == True:
                     log(f"Skipping file with no items: {json_path}")
                     return False
-            links = json_document["links"]
             url = json_document["url"]
             [url, _] = parse_url(url)
             if verbose == True:
-                log(f"Uploading page: {url}")
-            hash = hash_url(url)
-            # csv
-            csv_document = make_csv(items)
-            if csv_document is None:
+                log(f"Uploading file:\n\t{json_path}\n\t{url}")
+            gpt_document = summarize_document(json_document, json_path, url, verbose)
+            if gpt_document is None:
                 return False
-            json_folder = os.path.dirname(json_path)
-            csv_path = os.path.join(json_folder, hash + ".csv")
-            with open(csv_path, "w") as file:
-                file.write(csv_document)
-                if verbose == True:
-                    log(f"Saved csv: {csv_path}")
-            # chat gpt
-            summary = summarize_document(csv_document, json_path, url, verbose)
-            if summary is None:
-                return False
-            context_document = make_context_prompt(csv_document, summary, url)
-            context_path = os.path.join(json_folder, hash + ".gpt35")
-            with open(context_path, "w") as file:
-                file.write(context_document)
-                if verbose == True:
-                    log(f"Saved gpt35: {context_path}")
-            # chroma db
-            metadata = create_metadata(links, url)
-            upsert_document(chroma_collection, context_document, metadata, url, verbose)
+            json_document["gpt"] = gpt_document
+            success = upsert_document(chroma_collection, json_document, verbose)
+        if success == True:
+            with open(json_path, 'w') as file:
+                json.dump(json_document, file, indent=2, ensure_ascii=False)
             return True
     except Exception as e:
         log(f"Failed to upload file: {json_path}\n{str(e)}")

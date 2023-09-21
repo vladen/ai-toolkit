@@ -14,12 +14,38 @@ def query_chroma_db(chroma_collection, document_limit, text, verbose):
         include = ["distances"]
         if verbose == True:
             include.append("documents")
-        results = json.dumps(chroma_collection.query(
+            include.append("metadatas")
+        results = chroma_collection.query(
             include=include,
             n_results=document_limit,
             query_texts=[text],
-        ), ensure_ascii=False, indent=2)
-        print(results)
+        )
+        for index, ids in enumerate(results["ids"]):
+            id = ids[0]
+            if verbose == True:
+                distance = results["distances"][index][0]
+                document = json.dumps(
+                    json.loads(results["documents"][index][0]),
+                    ensure_ascii=False,
+                    indent=2
+                )
+                metadatas = json.dumps(
+                    results["metadatas"][index],
+                    ensure_ascii=False,
+                    indent=2
+                )
+                print(f"""
+Distance: {distance}
+Url: {id}
+
+Document:
+{document}
+
+Metadatas:
+{metadatas}
+                """)
+            else:
+                print(id)
     except Exception as e:
         log(f"Failed to query Chroma DB: {str(e)}")
 
@@ -44,6 +70,7 @@ def main(args):
         log(f"\tDocument limit: {document_limit}")
         log(f"\tPath to Chroma DB: {chroma_folder}")
         log(f"\tText: {text}")
+        log(f"\tVerbose: {verbose}")
     query_chroma_db(chroma_collection, document_limit, text, verbose)
 
 
@@ -61,6 +88,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "-l", "--limit", type=int, help=f"maximum number of results to return, {default_document_limit} by default")
     parser.add_argument(
-        "-v", "--verbose", type=bool, help=f"report activity to stdout", default=False)
+        "-v", "--verbose", type=bool, help=f"report activity to stdout", default=True)
     args = parser.parse_args()
     main(args)

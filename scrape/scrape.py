@@ -119,11 +119,9 @@ def fetch_document(target_folder, target_url, url_filter, verbose):
         json.loads(data), target_url, url_filter)
     # save as json and csv files
     hash = hash_url(target_url)
-    csv_path = os.path.join(target_folder, hash + ".csv")
     json_path = os.path.join(target_folder, hash + ".json")
     json_document = {
         "url": target_url,
-        "files": [csv_path, json_path],
         "length": text_length,
         "items": items,
         "links": links
@@ -178,7 +176,11 @@ def main(args):
     target_folder = parse_folder_arg(args)
     if target_folder is None:
         sys.exit(1)
-    url_filter = parse_filter_arg(args, get_default_filter(parsed_url))
+    netloc = re.escape(parsed_url.netloc)
+    scheme = re.escape(parsed_url.scheme)
+    # ^https://helpx.adobe.com/stock/(.*/)*[^.]+(\.html?)?$
+    default_filter = fr"^{scheme}://{netloc}(?:[^/]+/)*[^.]+(?:\.html?)?$"
+    url_filter = parse_filter_arg(args, default_filter)
     if url_filter is None:
         sys.exit(1)
     verbose = args.verbose
