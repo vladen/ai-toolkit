@@ -12,11 +12,12 @@ Command-line tools to:
 Assuming that you already have `python 3.10+` and `pip` onboard...
 
 ```bash
+$ pip install --user -U chromadb
 $ pip install --user -U nltk
 $ python -m nltk.downloader punkt
-$ pip install --user -U unstructured
-$ pip install --user -U chromadb
 $ pip install --user -U openai
+$ pip install --user -U tiktoken
+$ pip install --user -U unstructured
 ```
 
 Create env variable for `OPENAI_API_KEY` exporting your key.

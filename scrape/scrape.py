@@ -148,14 +148,13 @@ def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
             target_url = pending_urls.pop()
             linked_urls = fetch_document(
                 target_folder, target_url, url_filter, verbose)
-            if linked_urls is None:
-                continue
             scraped_urls.add(target_url)
-            matching_urls = [
-                link_url for link_url in linked_urls
-                if not link_url in scraped_urls
-            ]
-            pending_urls.update(matching_urls)
+            if not linked_urls is None:
+                matching_urls = [
+                    link_url for link_url in linked_urls
+                    if not link_url in scraped_urls
+                ]
+                pending_urls.update(matching_urls)
             document_count += 1
             if verbose == True:
                 log(f"Scraping pages: {len(pending_urls)} pending, {len(scraped_urls)} scraped")

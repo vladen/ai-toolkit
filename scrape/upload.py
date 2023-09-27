@@ -1,15 +1,20 @@
 import argparse
+import math
 import openai
-import pandas as pd
+import regex
 import signal
 import sys
 import time
+import tiktoken
 import threading
 
 from prompts import *
 from util import *
 
-default_document_limit = 100
+DOCUMENT_LIMIT = 100
+GPT_MODEL_NAME = "gpt-3.5-turbo-instruct"
+GPT_TEMPERATURE = 0.1
+GPT_TOKEN_LIMIT = 2048
 
 # graceful shutdown
 shutdown_requested = False
@@ -26,21 +31,28 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 # main logic
 
+
 def upsert_document(chroma_collection, json_document, verbose):
     if chroma_collection is None:
         return
-    gpt_document = json_document["gpt"]
-    summary = gpt_document.get("summary", "")
+    summaries = []
+    questions = []
+    for item in json_document.get("gpt", []):
+        summary = item.get("summary", "").strip()
+        if len(summary) == 0:
+            continue
+        questions.extend(item.get("questions", []))
+        summaries.append(summary)
     url = json_document["url"]
-    if len(summary) == 0:
-        log(f"Ignored document, missing summary: {url}")
+    if len(summaries) == 0:
+        log(f"Ignored document, missing summaries: {url}")
         return False
     document = json.dumps({
-        "summary": summary,
-        "questions": gpt_document.get("questions", []),
+        "summaries": summaries,
+        "questions": questions,
         "items": json_document["items"],
         "links": json_document["links"],
-    })
+    }, indent=3)
     metadata = {
         "updated": get_current_timestamp()
     }
@@ -51,69 +63,131 @@ def upsert_document(chroma_collection, json_document, verbose):
             ids=[url]
         )
         if verbose == True:
-          log(f"Upserted document to chroma db: {url}")
-          return True
+            log(f"Upserted document to chroma db: {url}\n{document}")
+            return True
     except Exception as e:
         log(f"Failed to upsert document to Chroma DB: {url}\n{str(e)}")
     return False
 
-def extract_texts(json_document):
-    texts = []
+
+def extract_chunks(encoding, json_document, token_limit):
+    duplicates = set()
+    chunks = [""]
+    new_chunk = True
+    simplification = regex.compile(r"\W+", regex.UNICODE, cache_pattern=True)
+    title = ""
+    title_done = False
+    title_token_limit = token_limit / 5
+    truncation = regex.compile(r"\p{P}", regex.UNICODE, cache_pattern=True)
+
+    def truncate_text(text, token_count, token_limit):
+        text_len = len(text)
+        extra_length = math.ceil(
+            (text_len/token_count) * (token_count - token_limit))
+        if extra_length < 1:
+            return text
+        match = truncation.search(text, endpos=text_len - extra_length)
+        if match:
+            return text[:extra_length - match.end()]
+        else:
+            return text
+
     for [type, text] in json_document["items"]:
-        texts.append(f"{type}: {text}")
-    df = pd.DataFrame({ "texts": texts })
-    texts = df.drop_duplicates(subset='texts')["texts"]
-    return "\n".join(texts)
+        simplified_text = simplification.sub(' ', text)
+        if simplified_text in duplicates:
+            continue
+        else:
+            duplicates.add(simplified_text)
+        item = f"{type}: {text}\n"
+        if title_done == False and (type in ["Title", "UncategorizedText"]):
+            title += item
+            token_count = len(encoding.encode(title))
+            if token_count > title_token_limit:
+                truncate_text(title, token_count, title_token_limit)
+                title_done = True
+        else:
+            title_done = True
+            chunk = chunks[-1] if len(chunks) > 0 else ""
+            if new_chunk == True:
+                chunk += title
+                new_chunk = False
+            chunk += item
+            token_count = len(encoding.encode(chunk))
+            if token_count > token_limit:
+                chunks[-1] = truncate_text(chunk, token_count, token_limit)
+                log(f"Truncated text:\n{chunk}")
+                new_chunk = True
+            else:
+                chunks[-1] = chunk
+    return chunks
+
 
 def summarize_document(json_document, json_path, url, verbose):
-    prompt = make_summary_prompt(extract_texts(json_document))
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    try:
-        response = openai.Completion.create(
-            model="gpt-3.5-turbo-instruct",
-            prompt=prompt,
-            max_tokens=1024,
-            temperature=0.25
-        )
-        gpt_document = json.loads(response.choices[0].text)
+    encoding = tiktoken.get_encoding("cl100k_base")
+    token_count = len(encoding.encode(make_summary_prompt("")))
+    log(f"Prompt template tokens: {token_count}")
+    token_limit = (GPT_TOKEN_LIMIT - token_count) / 2
+    chunks = extract_chunks(encoding, json_document, token_limit)
+    results = []
+    for chunk in chunks:
+        prompt = make_summary_prompt(chunk)
+        token_count = len(encoding.encode(prompt))
         if verbose == True:
-            log(f"Summarized with Chat GPT: {url}")
-        return {
-            "id": response.id,
-            "questions": gpt_document.get("questions", []),
-            "summary": gpt_document.get("summary", ""),
-            "usage": response.usage
-        }
-    except Exception as e:
-        log(f"Failed to summarize with Chat GPT:\n\t{len(prompt)} chars in prompt\n\t{json_path}\n\t{url}\n\t{str(e)}")
-        return False
+            log(f"Summarizing with Chat GPT: {token_count} tokens, {url}")
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        try:
+            response = openai.Completion.create(
+                model=GPT_MODEL_NAME,
+                prompt=prompt,
+                max_tokens=GPT_TOKEN_LIMIT - token_count,
+                temperature=GPT_TEMPERATURE
+            )
+            gpt_document = json.loads(response.choices[0].text)
+            questions = gpt_document.get("questions", [])
+            summary = gpt_document.get("summary", "")
+            total_tokens = gpt_document["usage"]["total_tokens"]
+            if verbose == True:
+                log(f"Summarized with Chat GPT: {total_tokens} tokens, {url}")
+            results.append({
+                "id": response.id,
+                "questions": questions,
+                "summary": summary,
+                "usage": response.usage
+            })
+        except Exception as e:
+            log(
+                f"Failed to summarize with Chat GPT:\n\t{json_path}\n\t{url}\n\t{str(e)}")
+    return results
+
 
 def upload_document(chroma_collection, json_path, verbose):
     success = False
-    try:
-        with open(json_path, 'r') as file:
-            json_document = json.load(file)
-            items = json_document.get("items", [])
-            if len(items) == 0:
-                if verbose == True:
-                    log(f"Skipping file with no items: {json_path}")
-                    return False
-            url = json_document["url"]
-            [url, _] = parse_url(url)
+    # try:
+    with open(json_path, 'r') as file:
+        json_document = json.load(file)
+        items = json_document.get("items", [])
+        if len(items) == 0:
             if verbose == True:
-                log(f"Uploading file:\n\t{json_path}\n\t{url}")
-            gpt_document = summarize_document(json_document, json_path, url, verbose)
-            if gpt_document is None:
+                log(f"Skipping file with no items: {json_path}")
                 return False
-            json_document["gpt"] = gpt_document
-            success = upsert_document(chroma_collection, json_document, verbose)
-        if success == True:
-            with open(json_path, 'w') as file:
-                json.dump(json_document, file, indent=2, ensure_ascii=False)
-            return True
-    except Exception as e:
-        log(f"Failed to upload file: {json_path}\n{str(e)}")
-        return False
+        url = json_document["url"]
+        [url, _] = parse_url(url)
+        if verbose == True:
+            log(f"Uploading file:\n\t{json_path}\n\t{url}")
+        results = summarize_document(
+            json_document, json_path, url, verbose)
+        if len(results) == 0:
+            return False
+        json_document["gpt"] = results
+        success = upsert_document(
+            chroma_collection, json_document, verbose)
+    if success == True:
+        with open(json_path, 'w') as file:
+            json.dump(json_document, file, indent=2, ensure_ascii=False)
+        return True
+    # except Exception as e:
+        # log(f"Failed to upload file: {json_path}\n{str(e)}")
+        # return False
 
 
 def upload_documents(chroma_collection, document_limit, target_folder, url_filter, verbose):
@@ -145,7 +219,7 @@ def upload_documents(chroma_collection, document_limit, target_folder, url_filte
             else:
                 failed_files.append(pending_file)
             if verbose == True:
-              log(f"Uploading files: {len(pending_files)} pending, {len(uploaded_files)} uploaded, {len(failed_files)} failed")
+                log(f"Uploading files: {len(pending_files)} pending, {len(uploaded_files)} uploaded, {len(failed_files)} failed")
     except KeyboardInterrupt:
         pass
 
@@ -155,7 +229,7 @@ def main(args):
     scraped_folder = parse_folder_arg(args)
     if scraped_folder is None:
         sys.exit(1)
-    document_limit = parse_limit_arg(args, default_document_limit)
+    document_limit = parse_limit_arg(args, DOCUMENT_LIMIT)
     if document_limit is None:
         sys.exit(1)
     url_filter = parse_filter_arg(args, r".*")
@@ -209,7 +283,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-f", "--filter", help="optional regex pattern filtering scraped pages to upload by URLs")
     parser.add_argument(
-        "-l", "--limit", type=int, help=f"maximum number of results to produce, {default_document_limit} by default")
+        "-l", "--limit", type=int, help=f"maximum number of results to produce, {DOCUMENT_LIMIT} by default")
     parser.add_argument(
         "-v", "--verbose", type=bool, help=f"report activity to stdout", default=True)
     args = parser.parse_args()
