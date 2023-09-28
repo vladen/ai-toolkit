@@ -12,12 +12,7 @@ Command-line tools to:
 Assuming that you already have `python 3.10+` and `pip` onboard...
 
 ```bash
-$ pip install --user -U chromadb
-$ pip install --user -U nltk
-$ python -m nltk.downloader punkt
-$ pip install --user -U openai
-$ pip install --user -U tiktoken
-$ pip install --user -U unstructured
+pip install --user -U -r requirements.txt
 ```
 
 Create env variable for `OPENAI_API_KEY` exporting your key.
@@ -27,7 +22,7 @@ Create env variable for `OPENAI_API_KEY` exporting your key.
 ### Scraping web site:
 
 ```bash
-$ python ./scrape/scrape.py "<url>" <folder>  -f "<filter>" -l 100 -v 0
+python ./scrape/scrape.py "<url>" <folder>  -f "<filter>" -l 100 -v 0
 ```
 
 Where:
@@ -60,7 +55,7 @@ Where:
 ### Querying Chroma DB:
 
 ```bash
-$ python ./scrape/query.py <folder> "<text>" -l <number> -v 1
+python ./scrape/query.py <folder> "<text>" -l <number> -v 1
 ```
 
 Where:
@@ -85,26 +80,26 @@ update `scrape/local.scrape.project.plist`
 ### Copying file to the daemon folder
 
 ```bash
-$ cp scripts/scrape/local.scrape.name.plist /Library/LaunchDaemons
+cp scripts/scrape/local.scrape.name.plist /Library/LaunchDaemons
 ```
 
 ### Running the daemon
 
 ```bash
-$ sudo launchctl start local.scrape.helpx
+sudo launchctl start local.scrape.helpx
 ```
 
 ### Checking daemon status
 
 ```bash
-$ sudo launchctl list | grep local.scrape.{name}
+sudo launchctl list | grep local.scrape.{name}
 ```
 
 ### Checking stdout and stderr logs
 
 ```bash
-$ tail -f /Users/{user}/Projects/private/ML/datasets/adobe/helpx/stdout.log
-$ tail -f /Users/{user}/Projects/private/ML/datasets/adobe/helpx/stderr.log
+tail -f /Users/{user}/Projects/private/ML/datasets/adobe/helpx/stdout.log
+tail -f /Users/{user}/Projects/private/ML/datasets/adobe/helpx/stderr.log
 ```
 
 ### Stopping and reloading the daemon
@@ -112,14 +107,14 @@ $ tail -f /Users/{user}/Projects/private/ML/datasets/adobe/helpx/stderr.log
 Reloading is needed of `.plist` file was updated.
 
 ```bash
-$ sudo launchctl stop local.scrape.helpx
-$ sudo launchctl unload /Library/LaunchDaemons/local.scrape.{project}.plist
-$ sudo launchctl load /Library/LaunchDaemons/local.scrape.{project}.plist
+sudo launchctl stop local.scrape.helpx
+sudo launchctl unload /Library/LaunchDaemons/local.scrape.{project}.plist
+sudo launchctl load /Library/LaunchDaemons/local.scrape.{project}.plist
 ```
 
 ### Checking number of files in target folder
 
 ```bash
-$ cd /Users/{user}/projects/datasets/{project}
-$ find . -type f | wc -l
+cd /Users/{user}/projects/datasets/{project}
+find . -type f | wc -l
 ```

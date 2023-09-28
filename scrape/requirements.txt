@@ -1,0 +1,6 @@
+chromadb
+nltk
+numpy
+openai
+tiktoken
+unstructured

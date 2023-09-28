@@ -1,6 +1,8 @@
 import argparse
 import math
+import numpy
 import openai
+import os
 import regex
 import signal
 import sys
@@ -8,13 +10,16 @@ import time
 import tiktoken
 import threading
 
-from prompts import *
+from chromadb.utils import embedding_functions
+from dialogs import *
 from util import *
 
 DOCUMENT_LIMIT = 100
-GPT_MODEL_NAME = "gpt-3.5-turbo-instruct"
+GPT_MODEL_NAME = "gpt-3.5-turbo-16k"
 GPT_TEMPERATURE = 0.1
-GPT_TOKEN_LIMIT = 2048
+GPT_TOKEN_LIMIT = 16384
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # graceful shutdown
 shutdown_requested = False
@@ -31,46 +36,52 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 # main logic
 
+get_embeddings = embedding_functions.OpenAIEmbeddingFunction(
+    model_name="text-embedding-ada-002"
+)
 
-def upsert_document(chroma_collection, json_document, verbose):
-    if chroma_collection is None:
-        return
-    summaries = []
-    questions = []
-    for item in json_document.get("gpt", []):
-        summary = item.get("summary", "").strip()
-        if len(summary) == 0:
-            continue
-        questions.extend(item.get("questions", []))
-        summaries.append(summary)
-    url = json_document["url"]
-    if len(summaries) == 0:
-        log(f"Ignored document, missing summaries: {url}")
-        return False
-    document = json.dumps({
-        "summaries": summaries,
-        "questions": questions,
-        "items": json_document["items"],
-        "links": json_document["links"],
-    }, indent=3)
+def count_content_tokens(content):
+    encoding = tiktoken.encoding_for_model(GPT_MODEL_NAME)
+    return len(encoding.encode(content))
+
+def count_dialog_tokens(messages):
+    encoding = tiktoken.encoding_for_model(GPT_MODEL_NAME)
+    # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
+    tokens_per_message = 3
+    tokens_per_name = 1
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3
+    return num_tokens
+
+def upsert_document(chroma_collection, document, embeddings, quiet=False):
+    hash = document['hash']
+    url = document['url']
+    document = json.dumps(document, ensure_ascii=False, indent=2)
     metadata = {
         "updated": get_current_timestamp()
     }
     try:
         chroma_collection.upsert(
             documents=[document],
+            embeddings=embeddings,
             metadatas=[metadata],
             ids=[url]
         )
-        if verbose == True:
-            log(f"Upserted document to chroma db: {url}\n{document}")
+        if not quiet:
+            log(f"Upserted document to Chroma DB: {hash} {url}")
             return True
-    except Exception as e:
-        log(f"Failed to upsert document to Chroma DB: {url}\n{str(e)}")
+    except:
+        log(f"Failed to upsert document to Chroma DB: {hash} {url}")
     return False
 
 
-def extract_chunks(encoding, json_document, token_limit):
+def extract_chunks(document, token_limit, quiet = False):
     duplicates = set()
     chunks = [""]
     new_chunk = True
@@ -79,7 +90,6 @@ def extract_chunks(encoding, json_document, token_limit):
     title_done = False
     title_token_limit = token_limit / 5
     truncation = regex.compile(r"\p{P}", regex.UNICODE, cache_pattern=True)
-
     def truncate_text(text, token_count, token_limit):
         text_len = len(text)
         extra_length = math.ceil(
@@ -91,8 +101,7 @@ def extract_chunks(encoding, json_document, token_limit):
             return text[:extra_length - match.end()]
         else:
             return text
-
-    for [type, text] in json_document["items"]:
+    for [type, text] in document["items"]:
         simplified_text = simplification.sub(' ', text)
         if simplified_text in duplicates:
             continue
@@ -101,7 +110,7 @@ def extract_chunks(encoding, json_document, token_limit):
         item = f"{type}: {text}\n"
         if title_done == False and (type in ["Title", "UncategorizedText"]):
             title += item
-            token_count = len(encoding.encode(title))
+            token_count = count_content_tokens(title)
             if token_count > title_token_limit:
                 truncate_text(title, token_count, title_token_limit)
                 title_done = True
@@ -112,88 +121,96 @@ def extract_chunks(encoding, json_document, token_limit):
                 chunk += title
                 new_chunk = False
             chunk += item
-            token_count = len(encoding.encode(chunk))
+            token_count = count_content_tokens(chunk)
             if token_count > token_limit:
                 chunks[-1] = truncate_text(chunk, token_count, token_limit)
-                log(f"Truncated text:\n{chunk}")
+                if not quiet:
+                    log(f"Truncated text:\n{chunk}")
                 new_chunk = True
             else:
                 chunks[-1] = chunk
     return chunks
 
 
-def summarize_document(json_document, json_path, url, verbose):
-    encoding = tiktoken.get_encoding("cl100k_base")
-    token_count = len(encoding.encode(make_summary_prompt("")))
-    log(f"Prompt template tokens: {token_count}")
+def summarize_document(document, quiet):
+    token_count = count_dialog_tokens(make_summary_dialog(""))
     token_limit = (GPT_TOKEN_LIMIT - token_count) / 2
-    chunks = extract_chunks(encoding, json_document, token_limit)
+    chunks = extract_chunks(document, token_limit, quiet)
     results = []
     for chunk in chunks:
-        prompt = make_summary_prompt(chunk)
-        token_count = len(encoding.encode(prompt))
-        if verbose == True:
-            log(f"Summarizing with Chat GPT: {token_count} tokens, {url}")
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        messages = make_summary_dialog(chunk)
+        token_count = count_dialog_tokens(messages)
+        max_tokens = GPT_TOKEN_LIMIT - token_count
+        if not quiet:
+            log(f"Summarizing with Chat GPT: {document['hash']} {document['url']}, {token_count}/{max_tokens} tokens")
+            # log(f"Summarizing with Chat GPT: {document['hash']} {document['url']}, {token_count}/{max_tokens} tokens\n{json.dumps(messages)}")
         try:
-            response = openai.Completion.create(
-                model=GPT_MODEL_NAME,
-                prompt=prompt,
+            response = openai.ChatCompletion.create(
+                messages=messages,
                 max_tokens=GPT_TOKEN_LIMIT - token_count,
+                model=GPT_MODEL_NAME,
                 temperature=GPT_TEMPERATURE
             )
-            gpt_document = json.loads(response.choices[0].text)
-            questions = gpt_document.get("questions", [])
+            usage = response.get("usage", {})
+            if not quiet:
+                total_tokens = usage.get("total_tokens", 0)
+                log(f"Summarized with Chat GPT: {document['hash']} {document['url']}, {total_tokens} tokens")
+                # log(f"Summarized with Chat GPT: {document['hash']} {document['url']}, {total_tokens} tokens\n{json.dumps(response, indent=2)}")
+            gpt_document = json.loads(response.choices[0].message.content)
             summary = gpt_document.get("summary", "")
-            total_tokens = gpt_document["usage"]["total_tokens"]
-            if verbose == True:
-                log(f"Summarized with Chat GPT: {total_tokens} tokens, {url}")
+            questions = gpt_document.get("questions", [])
+            answers = gpt_document.get("answers", [])
             results.append({
                 "id": response.id,
-                "questions": questions,
+                "chunk": chunk,
                 "summary": summary,
-                "usage": response.usage
+                "questions": questions,
+                "answers": answers,
+                "usage": usage
             })
-        except Exception as e:
-            log(
-                f"Failed to summarize with Chat GPT:\n\t{json_path}\n\t{url}\n\t{str(e)}")
+        except:
+            log(f"Failed to summarize document with Chat GPT: {document['hash']} {document['url']}")
     return results
 
 
-def upload_document(chroma_collection, json_path, verbose):
-    success = False
-    # try:
-    with open(json_path, 'r') as file:
-        json_document = json.load(file)
-        items = json_document.get("items", [])
-        if len(items) == 0:
-            if verbose == True:
-                log(f"Skipping file with no items: {json_path}")
+def upload_document(chroma_collection, document_path, quiet=False):
+    try:
+        with open(document_path, 'r') as file:
+            document = json.load(file)
+            items = document.get("items", [])
+            if not items:
+                if not quiet:
+                    log(f"Skipping file with no items: {os.path.basename(document_path)}")
                 return False
-        url = json_document["url"]
-        [url, _] = parse_url(url)
-        if verbose == True:
-            log(f"Uploading file:\n\t{json_path}\n\t{url}")
-        results = summarize_document(
-            json_document, json_path, url, verbose)
-        if len(results) == 0:
-            return False
-        json_document["gpt"] = results
-        success = upsert_document(
-            chroma_collection, json_document, verbose)
-    if success == True:
-        with open(json_path, 'w') as file:
-            json.dump(json_document, file, indent=2, ensure_ascii=False)
+            if not quiet:
+                log(f"Uploading document: {document['hash']} {document['url']}")
+            results = summarize_document(document, quiet)
+            if not results:
+                return False
+            document["gpt"] = results
+            texts = []
+            for result in results:
+                texts.append(result.pop("chunk", ""))
+                texts.append(result.get("summary", ""))
+                texts.extend(result.get("questions", []))
+                texts.extend(result.get("answers", []))
+            if not quiet:
+                log(f"Generating embeddings: {document['hash']} {document['url']}")
+            embeddings = numpy.array(get_embeddings(texts)).flatten().tolist()
+            if not upsert_document(chroma_collection, document, embeddings, quiet):
+                return False
+        with open(document_path, 'w') as file:
+            json.dump(document, file, indent=2, ensure_ascii=False)
         return True
-    # except Exception as e:
-        # log(f"Failed to upload file: {json_path}\n{str(e)}")
-        # return False
+    except:
+        log(f"Failed to upload file: {os.path.basename(document_path)}")
+    return False
 
 
-def upload_documents(chroma_collection, document_limit, target_folder, url_filter, verbose):
+def upload_documents(chroma_collection, target_folder, url_filter, document_limit=DOCUMENT_LIMIT, quiet=False):
     [_, scraped_urls, scraped_files] = restore_session(
-        None, target_folder, url_filter, verbose)
-    if (len(scraped_files) == 0):
+        target_folder, url_filter, document_limit, quiet)
+    if not scraped_files:
         log(f"No scraped files found, you need to run scrape script first")
         sys.exit(1)
     failed_files = []
@@ -206,62 +223,50 @@ def upload_documents(chroma_collection, document_limit, target_folder, url_filte
             if len(existing_ids) == 0:
                 scraped_file = scraped_files[index]
                 pending_files.append(scraped_file)
-    if verbose == True:
+    if not quiet:
         log(f"Starting uploading files: {len(pending_files)} pending")
     try:
         while not shutdown_requested and len(uploaded_files) < document_limit and len(pending_files):
             time.sleep(0.1)
             # try to upload next pending file
-            pending_file = pending_files.pop()
-            result = upload_document(chroma_collection, pending_file, verbose)
+            document_path = pending_files.pop()
+            result = upload_document(chroma_collection, document_path, quiet)
             if result == True:
-                uploaded_files.append(pending_file)
+                uploaded_files.append(document_path)
             else:
-                failed_files.append(pending_file)
-            if verbose == True:
+                failed_files.append(document_path)
+            if not quiet:
                 log(f"Uploading files: {len(pending_files)} pending, {len(uploaded_files)} uploaded, {len(failed_files)} failed")
     except KeyboardInterrupt:
         pass
 
 
 def main(args):
-    # parse args
-    scraped_folder = parse_folder_arg(args)
-    if scraped_folder is None:
+    chroma_collection = handle_chroma_arg(args)
+    document_limit = handle_limit_arg(args, DOCUMENT_LIMIT)
+    target_folder = handle_folder_arg(args)
+    url_filter = handle_filter_arg(args, r".*")
+    if not chroma_collection or not target_folder or not document_limit or not url_filter:
         sys.exit(1)
-    document_limit = parse_limit_arg(args, DOCUMENT_LIMIT)
-    if document_limit is None:
-        sys.exit(1)
-    url_filter = parse_filter_arg(args, r".*")
-    if url_filter is None:
-        sys.exit(1)
-    verbose = args.verbose
-    # report args
-    if verbose == True:
+    if not args.quiet:
         log(f"Ready to upload using args:")
-        log(f"\tChroma DB: {args.chroma}")
-        log(f"\tDocument limit: {document_limit}")
-        log(f"\tScraped folder: {scraped_folder}")
-        log(f"\tUrl filter: {url_filter}")
-    # connect to Chroma DB
-    chroma_collection = open_chroma_db(args.chroma, verbose)
-    if chroma_collection is None:
-        sys.exit(1)
-    # activate tool
+        log(f"\t Path to target folder: {target_folder}")
+        log(f"\t Path to Chroma DB: {args.chroma}")
+        log(f"\t Url filter: {url_filter}")
+        log(f"\t Document limit: {document_limit}")
     thread = threading.Thread(
         target=upload_documents,
         args=(
             chroma_collection,
-            document_limit,
-            scraped_folder,
+            target_folder,
             re.compile(url_filter),
-            verbose
+            document_limit,
+            args.quiet
         )
     )
     thread.daemon = True
     thread.start()
     thread.join()
-    # finalize
     log("Bye!")
 
 
@@ -285,6 +290,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "-l", "--limit", type=int, help=f"maximum number of results to produce, {DOCUMENT_LIMIT} by default")
     parser.add_argument(
-        "-v", "--verbose", type=bool, help=f"report activity to stdout", default=True)
+        "-q", "--quiet", action="store_true", help=f"suppress logging to stdout")
     args = parser.parse_args()
     main(args)

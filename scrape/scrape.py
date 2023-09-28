@@ -1,8 +1,4 @@
-# TODO: failed pages will be re-scraped after restart because not saved as visited
-
 import argparse
-import csv
-import io
 import json
 import os
 import re
@@ -11,14 +7,13 @@ import time
 import signal
 import sys
 
-from enum import Enum
 from unstructured.partition.html import partition_html
 from unstructured.staging.base import elements_to_json
 from urllib.parse import urljoin
 
 from util import *
 
-default_document_limit = 10000
+DOCUMENT_LIMIT = 10000
 
 # graceful shutdown
 shutdown_requested = False
@@ -44,7 +39,6 @@ def clean_items(items, target_url, url_filter):
     linked_urls = set()
     prev_index = None
     prev_type = None
-    text_length = 0
     for index, item in enumerate(items):
         item.pop("element_id", None)
         metadata = item.pop("metadata", {})
@@ -82,72 +76,63 @@ def clean_items(items, target_url, url_filter):
             item["metadata"] = metadata
         if len(text) > 0:
             if len(text) > 128:
-                text_length += len(text)
                 item["text"] = text
             elif not prev_type is None and prev_type == type:
                 prev_item = items[prev_index]
                 if "text" in prev_item:
                     if prev_item["text"].find(text) == -1:
                         prev_item["text"] += f" | {text}"
-                        text_length += len(text) + 3
                 else:
                     prev_item["text"] = text
-                    text_length += len(text)
             else:
                 item["text"] = text
-                text_length += len(text)
         if prev_type is None or prev_type != type:
             prev_index = index
             prev_type = type
     texful_items = [[item['type'], item['text']]
                     for item in items if "text" in item]
-    return [texful_items, text_length, linked_urls, all_links]
+    return [texful_items, linked_urls, all_links]
 
 
-def fetch_document(target_folder, target_url, url_filter, verbose):
-    # scrape the page with "unstructured"
+def fetch_document(target_folder, target_url, url_filter, quiet):
+    hash = hash_url(target_url)
     data = None
     try:
-        if verbose == True:
-            log(f"Fetching page: {target_url}")
+        if not quiet:
+            log(f"Fetching document: {hash} {target_url}")
         data = elements_to_json(partition_html(url=target_url))
-    except Exception as e:
-        log(f"Failed to fetch {target_url}: {str(e)}")
+    except:
+        log(f"Failed to fetch: {target_url}")
         return None
-    # reshape the data
-    [items, text_length, linked_urls, links] = clean_items(
+    [items, linked_urls, links] = clean_items(
         json.loads(data), target_url, url_filter)
-    # save as json and csv files
-    hash = hash_url(target_url)
     json_path = os.path.join(target_folder, hash + ".json")
     json_document = {
         "url": target_url,
-        "length": text_length,
+        "hash": hash,
         "items": items,
         "links": links
     }
     with open(json_path, "w") as file:
         json.dump(json_document, file, indent=2, ensure_ascii=False)
-    if verbose == True:
-        log(f"Saved as: {hash}")
     return linked_urls
 
 
-def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
+def scrape_url(base_url, target_folder, url_filter, document_limit=DOCUMENT_LIMIT, quiet=False):
     document_count = 0
     [pending_urls, scraped_urls, _] = restore_session(
-        None, target_folder, url_filter, verbose)
+        target_folder, url_filter, document_limit, quiet)
     if (len(pending_urls) == 0):
         pending_urls.add(base_url)
-    if verbose == True:
-        log(f"Starting scraping pages: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
+    if not quiet:
+        log(f"Updated queue: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
     try:
         while not shutdown_requested and document_count < document_limit and len(pending_urls):
             time.sleep(0.1)
             # try to fetch next pending url
             target_url = pending_urls.pop()
             linked_urls = fetch_document(
-                target_folder, target_url, url_filter, verbose)
+                target_folder, target_url, url_filter, quiet)
             scraped_urls.add(target_url)
             if not linked_urls is None:
                 matching_urls = [
@@ -156,8 +141,8 @@ def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
                 ]
                 pending_urls.update(matching_urls)
             document_count += 1
-            if verbose == True:
-                log(f"Scraping pages: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
+            if not quiet:
+                log(f"Updated queue: {len(pending_urls)} pending, {len(scraped_urls)} scraped")
     except KeyboardInterrupt:
         pass
 
@@ -166,33 +151,25 @@ def scrape_url(base_url, document_limit, target_folder, url_filter, verbose):
 
 def main(args):
     # parse args
-    [base_url, parsed_url] = parse_url_arg(args)
-    if parsed_url is None:
+    target_folder = handle_folder_arg(args)
+    document_limit = handle_limit_arg(args, DOCUMENT_LIMIT)
+    [base_url, parsed_url] = handle_url_arg(args)
+    if parsed_url:
+        netloc = re.escape(parsed_url.netloc)
+        scheme = re.escape(parsed_url.scheme)
+        default_filter = fr"^{scheme}://{netloc}(?:[^/]+/)*[^.]+(?:\.html?)?$"
+        url_filter = handle_filter_arg(args, default_filter)
+    if not document_limit or not parsed_url or not target_folder or not url_filter:
         sys.exit(1)
-    document_limit = parse_limit_arg(args, default_document_limit)
-    if document_limit is None:
-        sys.exit(1)
-    target_folder = parse_folder_arg(args)
-    if target_folder is None:
-        sys.exit(1)
-    netloc = re.escape(parsed_url.netloc)
-    scheme = re.escape(parsed_url.scheme)
-    # ^https://helpx.adobe.com/stock/(.*/)*[^.]+(\.html?)?$
-    default_filter = fr"^{scheme}://{netloc}(?:[^/]+/)*[^.]+(?:\.html?)?$"
-    url_filter = parse_filter_arg(args, default_filter)
-    if url_filter is None:
-        sys.exit(1)
-    verbose = args.verbose
-    # activate tool
-    log(f"Ready to scrape using args:")
-    log(f"\tBase url: {base_url}")
-    log(f"\tDocument limit: {document_limit}")
-    log(f"\tTarget folder: {target_folder}")
-    log(f"\tUrl filter: {url_filter}")
+    log(f"Ready to scrape web pages using args:")
+    log(f"\t Page URL: {base_url}")
+    log(f"\t Target folder: {target_folder}")
+    log(f"\t URL filter: {url_filter}")
+    log(f"\t Document limit: {document_limit}")
     thread = threading.Thread(
         target=scrape_url,
-        args=(base_url, document_limit, target_folder,
-              re.compile(url_filter), verbose)
+        args=(base_url, target_folder, re.compile(
+            url_filter), document_limit, args.quiet)
     )
     thread.daemon = True
     thread.start()
@@ -208,14 +185,14 @@ if __name__ == "__main__":
           Enjoy!
         """)
     parser.add_argument(
-        "url", help="URL of the page to scrape")
+        "url", help="URL of the initial page to scrape")
     parser.add_argument(
-        "folder", help="path to the folder where to save extracted data")
+        "folder", help="path to the data folder")
     parser.add_argument(
-        "-f", "--filter", help="optional URL regex pattern filtering found links out, base URL of the initial page by default (schema, domain, port)")
+        "-f", "--filter", help="optional regex filtering links found on scrapped pages, by default - base URL of the initial page")
     parser.add_argument(
-        "-l", "--limit", type=int, help=f"maximum number of URLs to fetch, {default_document_limit} by default")
+        "-l", "--limit", type=int, help=f"maximum number of URLs to fetch, by default - {DOCUMENT_LIMIT}")
     parser.add_argument(
-        "-v", "--verbose", type=bool, help=f"report activity to stdout", default=True)
+        "-q", "--quiet", action="store_true", help=f"suppress logging to stdout")
     args = parser.parse_args()
     main(args)
