@@ -4,18 +4,16 @@ import json
 import os
 import re
 import sys
+import tiktoken
 import traceback
 
+from chromadb.utils import embedding_functions
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
+from const import *
 
-def get_current_timestamp():
-    return int(datetime.utcnow().timestamp() * 1000)
-
-
-def hash_url(url):
-    return hashlib.md5(url.encode()).hexdigest()
+encoding = tiktoken.encoding_for_model(GPT_MODEL_NAME)
 
 
 def log(message):
@@ -25,15 +23,28 @@ def log(message):
     else:
         print(record)
 
+def change_extension(path, new_extension):
+    root, _ = os.path.splitext(path)
+    return root + new_extension
 
-def parse_url(url):
-    try:
-        parsed_url = urlparse(url)
-        base_url = urlunparse(parsed_url._replace(fragment='', query=''))
-        return [base_url, parsed_url]
-    except Exception:
-        log("Failed to parse URL: {url}")
-    return [None, None]
+def count_dialog_tokens(messages, tokens_per_message=3, tokens_per_name=1):
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += tokens_per_message
+    return num_tokens
+
+
+def count_text_tokens(text):
+    return len(encoding.encode(text))
+
+
+def get_current_timestamp():
+    return int(datetime.utcnow().timestamp() * 1000)
 
 
 def handle_arg(args, arg_name, default_value=None):
@@ -50,7 +61,11 @@ def handle_chroma_arg(args):
         try:
             chroma_client = chromadb.PersistentClient(path)
             chroma_collection = chroma_client.get_or_create_collection(
-                name="documents")
+                name="documents",
+                embedding_function=embedding_functions.OpenAIEmbeddingFunction(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    model_name="text-embedding-ada-002"
+                ))
             if not args.quiet:
                 log(f"Opened Chroma DB: {str(chroma_collection.count())} documents")
             return chroma_collection
@@ -113,6 +128,33 @@ def handle_url_arg(args):
     return [None, None]
 
 
+def hash_url(url):
+    return hashlib.md5(url.encode()).hexdigest()
+
+
+def normalise_whitespace(text):
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_url(url):
+    try:
+        parsed_url = urlparse(url)
+        base_url = urlunparse(parsed_url._replace(fragment='', query=''))
+        return [base_url, parsed_url]
+    except Exception:
+        log("Failed to parse URL: {url}")
+    return [None, None]
+
+
+def filter_links(page_links, url_filter):
+    filtered_links = set()
+    for link in page_links:
+        [base_url, _] = parse_url(link[0])
+        if base_url and url_filter.match(base_url):
+            filtered_links.add(base_url)
+    return filtered_links
+
+
 def restore_session(target_folder, url_filter, document_limit=None, quiet=False):
     pending_urls = set()
     scraped_files = set()
@@ -131,12 +173,9 @@ def restore_session(target_folder, url_filter, document_limit=None, quiet=False)
                 if len(url) and url_filter.match(url):
                     scraped_files.add(file_path)
                     scraped_urls.add(url)
-            for link in document.get('links', []):
-                link_url = link[0]
-                [linked_url, _] = parse_url(link_url)
-                if linked_url and url_filter.match(linked_url) and not link_url in scraped_urls:
-                    pending_urls.add(linked_url)
-                    if document_limit and len(pending_urls) == document_limit:
+            for link_url in filter_links(document.get('links', []), url_filter):
+                if not link_url in scraped_urls:
+                    pending_urls.add(link_url)
+                    if document_limit and len(pending_urls) >= document_limit:
                         break
-    pending_urls = pending_urls - scraped_urls
     return [pending_urls, scraped_urls, scraped_files]

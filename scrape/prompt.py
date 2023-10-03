@@ -3,8 +3,8 @@ def make_summary_dialog(content):
         {
             "role": "system",
             "content": """
-You are AI consultant helping end users in achieving their goals using software products developed by Adobe Corp.
-Be concise, precise and informative, always stay within provided context, use imperative style to instruct the user.
+You are AI consultant helping end users in achieving their goals using software products developed by the Corporation.
+Be concise, precise and informative, try to instruct the users, always stay within provided context.
             """
         },
         {
@@ -20,14 +20,12 @@ Detect:
 * main `product` - mentioned most.
 
 Generate:
-* one summary in form of how-to;
-* decent number of end-user questions about the `product` in scope of `subject`;
+* decent number of how-to end-user questions about the `product` in scope of `subject`;
 * same number of detailed answers to the generated questions, based on the `article`.
 
 Format your reply using this template:
 ```json
 {{
-  "summary": "",
   "questions": [""],
   "answers": [""],
 }}

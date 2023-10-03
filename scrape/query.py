@@ -1,7 +1,5 @@
 import argparse
-import json
 import sys
-import traceback
 
 from util import *
 
@@ -29,16 +27,10 @@ def query_chroma_db(chroma_collection, query_text, document_limit=DOCUMENT_LIMIT
             id = ids[0]
             if quiet == False:
                 distance = results["distances"][index][0]
-                document = json.dumps(
-                    json.loads(results["documents"][index][0]),
-                    ensure_ascii=False,
-                    indent=2
-                )
-                metadatas = json.dumps(
-                    results["metadatas"][index],
-                    ensure_ascii=False,
-                    indent=2
-                )
+                document = results["documents"][index][0]
+                metadatas = results["metadatas"][index][0]
+                links = len(metadatas.get("link_urls", "").split("\n"))
+                updated = metadatas.get("updated")
                 print(f"""
 Distance: {distance}
 Url: {id}
@@ -47,7 +39,8 @@ Document:
 {document}
 
 Metadatas:
-{metadatas}
+links: {links}
+updated: {updated}
                 """)
             else:
                 print(id)

@@ -10,14 +10,11 @@ import time
 import tiktoken
 import threading
 
-from chromadb.utils import embedding_functions
-from dialogs import *
+from const import *
+from prompt import *
 from util import *
 
 DOCUMENT_LIMIT = 100
-GPT_MODEL_NAME = "gpt-3.5-turbo-16k"
-GPT_TEMPERATURE = 0.1
-GPT_TOKEN_LIMIT = 16384
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -35,10 +32,6 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # main logic
-
-get_embeddings = embedding_functions.OpenAIEmbeddingFunction(
-    model_name="text-embedding-ada-002"
-)
 
 def count_content_tokens(content):
     encoding = tiktoken.encoding_for_model(GPT_MODEL_NAME)
@@ -59,33 +52,46 @@ def count_dialog_tokens(messages):
     num_tokens += 3
     return num_tokens
 
-def upsert_document(chroma_collection, document, embeddings, quiet=False):
-    hash = document['hash']
-    url = document['url']
-    document = json.dumps(document, ensure_ascii=False, indent=2)
+def upsert_document(chroma_collection, document, quiet=False):
+    target_name = document['name']
+    target_url = document['url']
+    texts = []
+    for result in document['chunks']:
+        texts.append(result["chunk"])
+        texts.append("---")
+        for [question, answer] in zip(result["questions"], result["answers"]):
+            texts.append(question)
+            texts.append(answer)
+            texts.append("")
+    link_texts = []
+    link_urls = []
+    for link in document["links"]:
+        link_urls.append(link[0])
+        link_texts.append(link[1] if len(link) > 1 else "")
     metadata = {
-        "updated": get_current_timestamp()
+        "link_urls": "\n".join(link_urls),
+        "link_texts": "\n".join(link_texts),
+        "updated": datetime.now().isoformat() # TODO: use web page metadata
     }
+    document = "\n".join(texts)
     try:
+        if not quiet:
+            log(f"Upserting document to Chroma DB: {target_url} {target_name}")
         chroma_collection.upsert(
             documents=[document],
-            embeddings=embeddings,
             metadatas=[metadata],
-            ids=[url]
+            ids=[target_url]
         )
-        if not quiet:
-            log(f"Upserted document to Chroma DB: {hash} {url}")
-            return True
+        return True
     except:
-        log(f"Failed to upsert document to Chroma DB: {hash} {url}")
+        log(f"Failed to upsert document to Chroma DB: {target_url} {target_name}")
     return False
 
 
-def extract_chunks(document, token_limit, quiet = False):
-    duplicates = set()
+
+def extract_chunks(text, token_limit, quiet = False):
     chunks = [""]
     new_chunk = True
-    simplification = regex.compile(r"\W+", regex.UNICODE, cache_pattern=True)
     title = ""
     title_done = False
     title_token_limit = token_limit / 5
@@ -101,15 +107,9 @@ def extract_chunks(document, token_limit, quiet = False):
             return text[:extra_length - match.end()]
         else:
             return text
-    for [type, text] in document["items"]:
-        simplified_text = simplification.sub(' ', text)
-        if simplified_text in duplicates:
-            continue
-        else:
-            duplicates.add(simplified_text)
-        item = f"{type}: {text}\n"
-        if title_done == False and (type in ["Title", "UncategorizedText"]):
-            title += item
+    for line in text.split("\n"):
+        if not title_done and line.startswith("Title:"):
+            title += f"{line}\n"
             token_count = count_content_tokens(title)
             if token_count > title_token_limit:
                 truncate_text(title, token_count, title_token_limit)
@@ -117,10 +117,10 @@ def extract_chunks(document, token_limit, quiet = False):
         else:
             title_done = True
             chunk = chunks[-1] if len(chunks) > 0 else ""
-            if new_chunk == True:
+            if new_chunk:
                 chunk += title
                 new_chunk = False
-            chunk += item
+            chunk += f"{line}\n"
             token_count = count_content_tokens(chunk)
             if token_count > token_limit:
                 chunks[-1] = truncate_text(chunk, token_count, token_limit)
@@ -132,18 +132,17 @@ def extract_chunks(document, token_limit, quiet = False):
     return chunks
 
 
-def summarize_document(document, quiet):
+def summarize_text(target_name, target_url, text, quiet):
     token_count = count_dialog_tokens(make_summary_dialog(""))
     token_limit = (GPT_TOKEN_LIMIT - token_count) / 2
-    chunks = extract_chunks(document, token_limit, quiet)
+    chunks = extract_chunks(text, token_limit, quiet)
     results = []
     for chunk in chunks:
         messages = make_summary_dialog(chunk)
         token_count = count_dialog_tokens(messages)
         max_tokens = GPT_TOKEN_LIMIT - token_count
         if not quiet:
-            log(f"Summarizing with Chat GPT: {document['hash']} {document['url']}, {token_count}/{max_tokens} tokens")
-            # log(f"Summarizing with Chat GPT: {document['hash']} {document['url']}, {token_count}/{max_tokens} tokens\n{json.dumps(messages)}")
+            log(f"Analysing document with Chat GPT: {target_url} {target_name}\n\t{token_count}/{max_tokens} tokens")
         try:
             response = openai.ChatCompletion.create(
                 messages=messages,
@@ -152,24 +151,18 @@ def summarize_document(document, quiet):
                 temperature=GPT_TEMPERATURE
             )
             usage = response.get("usage", {})
-            if not quiet:
-                total_tokens = usage.get("total_tokens", 0)
-                log(f"Summarized with Chat GPT: {document['hash']} {document['url']}, {total_tokens} tokens")
-                # log(f"Summarized with Chat GPT: {document['hash']} {document['url']}, {total_tokens} tokens\n{json.dumps(response, indent=2)}")
             gpt_document = json.loads(response.choices[0].message.content)
-            summary = gpt_document.get("summary", "")
             questions = gpt_document.get("questions", [])
             answers = gpt_document.get("answers", [])
             results.append({
                 "id": response.id,
                 "chunk": chunk,
-                "summary": summary,
-                "questions": questions,
-                "answers": answers,
+                "questions": questions, # TODO: ensure array
+                "answers": answers, # TODO: ensure array
                 "usage": usage
             })
         except:
-            log(f"Failed to summarize document with Chat GPT: {document['hash']} {document['url']}")
+            log(f"Failed to analyse document with Chat GPT: {target_url} {target_name}")
     return results
 
 
@@ -177,33 +170,23 @@ def upload_document(chroma_collection, document_path, quiet=False):
     try:
         with open(document_path, 'r') as file:
             document = json.load(file)
-            items = document.get("items", [])
-            if not items:
-                if not quiet:
-                    log(f"Skipping file with no items: {os.path.basename(document_path)}")
-                return False
-            if not quiet:
-                log(f"Uploading document: {document['hash']} {document['url']}")
-            results = summarize_document(document, quiet)
-            if not results:
-                return False
-            document["gpt"] = results
-            texts = []
-            for result in results:
-                texts.append(result.pop("chunk", ""))
-                texts.append(result.get("summary", ""))
-                texts.extend(result.get("questions", []))
-                texts.extend(result.get("answers", []))
-            if not quiet:
-                log(f"Generating embeddings: {document['hash']} {document['url']}")
-            embeddings = numpy.array(get_embeddings(texts)).flatten().tolist()
-            if not upsert_document(chroma_collection, document, embeddings, quiet):
-                return False
+        target_name = document['name']
+        target_url = document['url']
+        with open(change_extension(document_path, '.txt'), 'r') as file:
+            text = file.read()
+        results = summarize_text(target_name, target_url, text, quiet)
+        if not results:
+            return False
+        document["chunks"] = results
+        if not upsert_document(chroma_collection, document, quiet):
+            return False
         with open(document_path, 'w') as file:
+            if not quiet:
+                log(f"Updating document: {target_url} {target_name}")
             json.dump(document, file, indent=2, ensure_ascii=False)
         return True
     except:
-        log(f"Failed to upload file: {os.path.basename(document_path)}")
+        log(f"Failed to upload document: {os.path.basename(document_path)}")
     return False
 
 
@@ -224,11 +207,10 @@ def upload_documents(chroma_collection, target_folder, url_filter, document_limi
                 scraped_file = scraped_files[index]
                 pending_files.append(scraped_file)
     if not quiet:
-        log(f"Starting uploading files: {len(pending_files)} pending")
+        log(f"Uploading files: {len(pending_files)} pending")
     try:
         while not shutdown_requested and len(uploaded_files) < document_limit and len(pending_files):
             time.sleep(0.1)
-            # try to upload next pending file
             document_path = pending_files.pop()
             result = upload_document(chroma_collection, document_path, quiet)
             if result == True:
@@ -250,10 +232,10 @@ def main(args):
         sys.exit(1)
     if not args.quiet:
         log(f"Ready to upload using args:")
-        log(f"\t Path to target folder: {target_folder}")
-        log(f"\t Path to Chroma DB: {args.chroma}")
-        log(f"\t Url filter: {url_filter}")
-        log(f"\t Document limit: {document_limit}")
+        log(f"  Path to target folder: {target_folder}")
+        log(f"  Path to Chroma DB: {args.chroma}")
+        log(f"  Url filter: {url_filter}")
+        log(f"  Document limit: {document_limit}")
     thread = threading.Thread(
         target=upload_documents,
         args=(
