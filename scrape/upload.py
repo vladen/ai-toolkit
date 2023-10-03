@@ -56,13 +56,12 @@ def upsert_document(chroma_collection, document, quiet=False):
     target_name = document['name']
     target_url = document['url']
     texts = []
-    for result in document['chunks']:
-        texts.append(result["chunk"])
+    for chunk in document['chunks']:
+        texts.append(chunk["chunk"])
         texts.append("---")
-        for [question, answer] in zip(result["questions"], result["answers"]):
+        for [question, answer] in zip(chunk['questions'], chunk['answers']):
             texts.append(question)
             texts.append(answer)
-            texts.append("")
     link_texts = []
     link_urls = []
     for link in document["links"]:
@@ -90,7 +89,7 @@ def upsert_document(chroma_collection, document, quiet=False):
 
 
 def extract_chunks(text, token_limit, quiet = False):
-    chunks = [""]
+    chunks = []
     new_chunk = True
     title = ""
     title_done = False
@@ -112,27 +111,33 @@ def extract_chunks(text, token_limit, quiet = False):
             title += f"{line}\n"
             token_count = count_content_tokens(title)
             if token_count > title_token_limit:
-                truncate_text(title, token_count, title_token_limit)
+                title = truncate_text(title, token_count, title_token_limit)
+                if not quiet:
+                    log(f"Truncated title:\n{title}")
                 title_done = True
         else:
             title_done = True
-            chunk = chunks[-1] if len(chunks) > 0 else ""
+            chunk = ""
+            if chunks:
+                chunk = f"{chunks[-1]}{line}\n"
+                token_count = count_content_tokens(chunk)
+                if token_count > token_limit:
+                    new_chunk = True
             if new_chunk:
-                chunk += title
                 new_chunk = False
-            chunk += f"{line}\n"
-            token_count = count_content_tokens(chunk)
-            if token_count > token_limit:
-                chunks[-1] = truncate_text(chunk, token_count, token_limit)
-                if not quiet:
-                    log(f"Truncated text:\n{chunk}")
-                new_chunk = True
+                chunk = f"{title}{line}\n"
+                token_count = count_content_tokens(chunk)
+                if token_count > token_limit:
+                    chunk = truncate_text(chunk, token_count, token_limit)
+                    if not quiet:
+                        log(f"Truncated text:\n{chunk}")
+                chunks.append(chunk)
             else:
                 chunks[-1] = chunk
     return chunks
 
 
-def summarize_text(target_name, target_url, text, quiet):
+def analyse_document(target_name, target_url, text, quiet):
     token_count = count_dialog_tokens(make_summary_dialog(""))
     token_limit = (GPT_TOKEN_LIMIT - token_count) / 2
     chunks = extract_chunks(text, token_limit, quiet)
@@ -151,16 +156,28 @@ def summarize_text(target_name, target_url, text, quiet):
                 temperature=GPT_TEMPERATURE
             )
             usage = response.get("usage", {})
-            gpt_document = json.loads(response.choices[0].message.content)
-            questions = gpt_document.get("questions", [])
-            answers = gpt_document.get("answers", [])
-            results.append({
-                "id": response.id,
-                "chunk": chunk,
-                "questions": questions, # TODO: ensure array
-                "answers": answers, # TODO: ensure array
-                "usage": usage
-            })
+            success = False
+            try:
+                reply = json.loads(response.choices[0].message.content)
+                answers = []
+                questions = []
+                for index, question in enumerate(reply["questions"]):
+                    if len(reply["answers"]) > index:
+                        questions.append(question)
+                        answers.append(reply["answers"][index])
+                if len(questions) > 0 and len(questions) == len(answers):
+                    results.append({
+                        "id": response.id,
+                        "chunk": chunk,
+                        "questions": questions,
+                        "answers": answers,
+                        "usage": usage
+                    })
+                    success = True
+            except:
+                pass
+            if not success:
+                log(f"Unexpected Chat GPT response: {target_url} {target_name}\n{response}")
         except:
             log(f"Failed to analyse document with Chat GPT: {target_url} {target_name}")
     return results
@@ -174,8 +191,9 @@ def upload_document(chroma_collection, document_path, quiet=False):
         target_url = document['url']
         with open(change_extension(document_path, '.txt'), 'r') as file:
             text = file.read()
-        results = summarize_text(target_name, target_url, text, quiet)
+        results = analyse_document(target_name, target_url, text, quiet)
         if not results:
+            log(f"Could not find content: {target_name}")
             return False
         document["chunks"] = results
         if not upsert_document(chroma_collection, document, quiet):
@@ -186,7 +204,7 @@ def upload_document(chroma_collection, document_path, quiet=False):
             json.dump(document, file, indent=2, ensure_ascii=False)
         return True
     except:
-        log(f"Failed to upload document: {os.path.basename(document_path)}")
+        log(f"Failed to upload document: {target_name}")
     return False
 
 

@@ -10,26 +10,24 @@ Be concise, precise and informative, try to instruct the users, always stay with
         {
             "role": "user",
             "content": f"""
-Use the following `article` from the corporate knowledge base:
+Use this article from the corporate knowledge base as context.
 ```text
 {content}
 ```
-
-Detect:
-* main `subject` - from the first line having `Title:` prefix;
-* main `product` - mentioned most.
-
-Generate:
-* decent number of how-to end-user questions about the `product` in scope of `subject`;
-* same number of detailed answers to the generated questions, based on the `article`.
-
-Format your reply using this template:
-```json
-{{
-  "questions": [""],
-  "answers": [""],
-}}
-```
             """
-        }
+        },
+        {
+            "role": "user",
+            "content": """
+Generate:
+* decent number of how-to end-user questions about the product and its use-case described in the article;
+* same number of detailed answers to the generated questions, based on the article.
+Format result as json based on template:
+```json
+{
+    "questions": [],
+    "answers": [],
+}
+"""
+        },
     ]
